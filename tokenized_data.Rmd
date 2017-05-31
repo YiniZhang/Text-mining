@@ -1,0 +1,191 @@
+---
+title: "Tokenize Data"
+author: "Yini Zhang (yz3005)"
+date: "May 50, 2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#Step 0. Install and Load Packages
+```{r, message=FALSE, warning=FALSE}
+packages.used=c("tm", "wordcloud", "RColorBrewer", "tidyr",
+                "dplyr", "tidytext", "stringr", "ggplot2")
+
+# check packages that need to be installed.
+packages.needed=setdiff(packages.used, 
+                        intersect(installed.packages()[,1], 
+                                  packages.used))
+# install additional packages
+if(length(packages.needed)>0){
+  install.packages(packages.needed, dependencies = TRUE,
+                   repos='http://cran.us.r-project.org')
+}
+
+library(dplyr)
+library(tidytext)
+library(tidyr)
+library(stringr)
+library(tm)
+library(ggplot2)
+library(wordcloud)
+library(RColorBrewer)
+```
+
+#Step 1. Read in the data
+```{r, message=FALSE, warning=FALSE}
+thoughts <- read.csv("TOUElectricityDecisions_2.2_Thoughts_Ratings_2017_4_4.csv", stringsAsFactors = FALSE)
+
+# rename colnames
+names(thoughts)[2:13]  <- c(paste0("PlanThought", str_pad(c(1:12), width = 2, pad = "0")))
+names(thoughts)[14:25] <- c(paste0("ValenceThought", str_pad(c(1:12), width = 2, pad = "0")))
+names(thoughts)[26:37] <- c(paste0("FeelThought", str_pad(c(1:12), width = 2, pad = "0")))
+```
+
+#Step 2. Reshape the data
+```{r, message=FALSE, warning=FALSE}
+# narrow df of plan, valence, feel respectively
+plan    <- thoughts %>% 
+                select(UniqueID: PlanThought12) %>% 
+                gather(ThoughtID, text, PlanThought01:PlanThought12) %>% 
+                arrange(UniqueID, ThoughtID) 
+valence <- thoughts %>%
+                select(UniqueID, ValenceThought01:ValenceThought12) %>%
+                gather(ValenceID, Valence, ValenceThought01:ValenceThought12) %>% 
+                arrange(UniqueID, ValenceID)
+feel    <- thoughts %>%
+                select(UniqueID, FeelThought01:FeelThought12) %>%
+                gather(FeelID, Feel, FeelThought01:FeelThought12) %>% 
+                arrange(UniqueID, FeelID)
+
+# combined df
+thoughtsNarrow             <- cbind(plan, valence$Valence, feel$Feel) %>% drop_na()
+names(thoughtsNarrow)[4:5] <- c("Valence", "Feel")
+```
+
+#Step 3. Text processing
+```{r, message=FALSE, warning=FALSE}
+# clean time: 4-9, 6-4, ...
+thoughtsNarrow$text_clean <- sub(pattern = "([0-9]{1,2})[[:space:]]?(am|pm|AM|PM|Am|Pm)?[[:space:]]?(to|and|&|-)[[:space:]]?([0-9]{1,2})[[:space:]]?(am|pm|AM|PM|Am|Pm)?", "\\1to\\4 ", thoughtsNarrow$text)
+thoughtsNarrow$text_clean <- sub(pattern = "([0-9])[[:space:]](am|pm|AM|PM|Am|Pm)?", 
+                                 "\\1\\2 ", thoughtsNarrow$text_clean)
+thoughtsNarrow$text_clean <- sub(pattern = "4to9 :00 PM", 
+                                 "4to9 ", thoughtsNarrow$text_clean)
+thoughtsNarrow$text_clean <- sub(pattern = "4:00to9 :00PM", 
+                                 "4to9 ", thoughtsNarrow$text_clean)
+thoughtsNarrow$text_clean <- sub(pattern = "4:00p .m. and 9:00 p.m.", 
+                                 "4to9 ", thoughtsNarrow$text_clean)
+thoughtsNarrow$text_clean <- sub(pattern = "7:30 a.m. and 10:30 a.m.", 
+                                 "7:30to10:30 ", thoughtsNarrow$text_clean)
+thoughtsNarrow$text_clean <- sub(pattern = "4:00 p.m. and 9:00 p.m.", 
+                                 "4to9 ", thoughtsNarrow$text_clean)
+thoughtsNarrow$text_clean <- sub(pattern = "4 P. M. and 6 P.M.", 
+                                 "4to6 ", thoughtsNarrow$text_clean)
+thoughtsNarrow$text_clean <- gsub(pattern = "([0-9]+)(:00|.00)", 
+                                 " ", thoughtsNarrow$text_clean)
+
+
+# clean money: 48 cents,...
+thoughtsNarrow$text_clean <- gsub(pattern = "([0-9]{1,2})[[:space:]]?(cent|CENT)[sS]*", 
+                                  "\\1cents", thoughtsNarrow$text_clean)
+thoughtsNarrow$text_clean <- gsub(pattern = "(32|40|48)[[:space:]]", 
+                                  "\\1cents ", thoughtsNarrow$text_clean)
+thoughtsNarrow$text_clean <- gsub(pattern = "32[$]", 
+                                  "32cents ", thoughtsNarrow$text_clean)
+thoughtsNarrow$text_clean <- gsub(pattern = "[$]0[.]48cents", 
+                                  "48cents ", thoughtsNarrow$text_clean)
+
+
+# clean typo: flex-
+thoughtsNarrow$text_clean <- gsub(pattern = "(flex|Flex)[a-z]*[[:space:]]?", 
+                                  "flex ", thoughtsNarrow$text_clean)
+thoughtsNarrow$text_clean <- gsub(pattern = "FLEXIBLE", 
+                                  "flex ", thoughtsNarrow$text_clean)
+
+
+# clean digits
+thoughtsNarrow$text_clean <- gsub(pattern = "(20|22|24)", 
+                                  " ", thoughtsNarrow$text_clean)
+thoughtsNarrow$text_clean <- gsub(pattern = "([0-9]+)(%)", 
+                                  " ", thoughtsNarrow$text_clean)
+
+
+docs <- Corpus(VectorSource(thoughtsNarrow$text_clean))
+
+# remove potentially problematic symbols
+docs <- tm_map(docs,content_transformer(tolower))
+#writeLines(as.character(docs[[sample(1:nrow(thoughtsNarrow), 1)]]))
+
+# remove punctuation
+docs <- tm_map(docs, removePunctuation)
+#writeLines(as.character(docs[[sample(1:nrow(thoughtsNarrow), 1)]]))
+
+# remove stopwords
+docs <- tm_map(docs, removeWords, stopwords("english"))
+#writeLines(as.character(docs[[sample(1:nrow(thoughtsNarrow), 1)]]))
+
+# remove whitespace
+docs <- tm_map(docs, stripWhitespace)
+#writeLines(as.character(docs[[sample(1:nrow(thoughtsNarrow), 1)]]))
+
+# Stem document
+docs <- tm_map(docs,stemDocument)
+#writeLines(as.character(docs[[sample(1:nrow(thoughtsNarrow), 1)]]))
+
+# convert the corpus back to dataframe
+text_cleaned     <- data.frame(text_cleaned = sapply(docs, as.character), stringsAsFactors = FALSE)
+thoughtsNarrow   <- cbind(thoughtsNarrow, text_cleaned)
+
+# customize: remove some words that should not considered as stopwords
+stop_customized  <- stop_words %>% filter(!word %in% c("good", "long"))
+
+# tokenized data
+cleaned_thoughts <- thoughtsNarrow %>% 
+                       mutate(text_cleaned = gsub('^o[0-9]+ ', ' ', text_cleaned) ) %>%
+                       tbl_df() %>%
+                       unnest_tokens(word, text_cleaned) %>% 
+                       anti_join(stop_customized) %>%
+                       select(UniqueID, ThoughtID, Valence, Feel, word) %>%
+                       filter(grepl("[0-9]*[a-z]+[0-9]*", word)) %>%   # remove unimportant digits
+                       arrange(UniqueID, ThoughtID)
+
+# a glimpse of tokenized data
+head(cleaned_thoughts,10)
+```
+
+#Step 4. Word Frequency
+```{r, message=FALSE, warning=FALSE}
+wordCount <- cleaned_thoughts %>% count(word) %>% arrange(desc(n))
+
+# save results
+#save(wordCount, cleaned_thoughts, file = "tokenized_data.RData")
+
+# visualize: words with high frequency (>70)
+cleaned_thoughts %>%
+  count(word, sort = TRUE) %>%
+  filter(n > 70) %>%
+  mutate(word = reorder(word, n)) %>%
+  ggplot(aes(word, n)) +
+  geom_col() +
+  xlab(NULL) +
+  coord_flip()
+```
+
+
+#Step 5. Wordcloud
+```{r, message=FALSE, warning=FALSE}
+# wordcloud
+wordcloud(wordCount$word, wordCount$n,
+          scale=c(8,0.5),
+          max.words=100,
+          min.freq=2,
+          random.order=FALSE,
+          rot.per=0.15,
+          use.r.layout=TRUE,
+          random.color=TRUE,
+          fixed.asp = TRUE,
+          colors=brewer.pal(9,"Greens"))
+```
+
