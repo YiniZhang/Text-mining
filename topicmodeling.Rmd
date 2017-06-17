@@ -1,0 +1,185 @@
+---
+title: "Topic Modeling"
+author: "Yini Zhang (yz3005)"
+date: "June 2nd, 2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#Step 0. Install and Load Packages
+```{r, message=FALSE, warning=FALSE}
+packages.used=c("tm", "tidyr", "LDAvis", "servr","ggplot2",
+                "dplyr", "tidytext", "topicmodels")
+
+# check packages that need to be installed.
+packages.needed=setdiff(packages.used, 
+                        intersect(installed.packages()[,1], 
+                                  packages.used))
+# install additional packages
+if(length(packages.needed)>0){
+  install.packages(packages.needed, dependencies = TRUE,
+                   repos='http://cran.us.r-project.org')
+}
+
+library(dplyr)
+library(tidytext)
+library(tidyr)
+library(tm)
+library(topicmodels)
+library(LDAvis)
+library(servr)
+library(ggplot2)
+```
+
+#Step 1. Read in the data
+```{r, message=FALSE, warning=FALSE}
+load("../output/tokenized_data.RData")
+condition <- read.csv("../data/Choice_Condition_AspectRating.csv")[, 1:3]
+
+```
+
+#Step 2. Preprocess data
+```{r, message=FALSE, warning=FALSE}
+# count the words per document
+thoughts_word_document <- cleaned_thoughts %>% 
+  group_by(Condition_Merged, PreferFlex) %>% 
+  count(UniqueID, word) %>% 
+  ungroup()
+
+# convert tidy dataframe to document-term-matrix
+dtm_thoughts <- cast_dtm(thoughts_word_document, document = UniqueID, term = word, value = n)
+```
+
+#Step 3. Topic Modeling
+```{r, message=FALSE, warning=FALSE}
+#Set parameters for Gibbs sampling
+burnin <- 4000
+iter <- 2000
+thin <- 500
+seed <-list(2003,5,63,100001,765)
+nstart <- 5
+best <- TRUE
+
+#Number of topics
+k <- 7
+
+#Run LDA using Gibbs sampling
+ldaOut <-LDA(dtm_thoughts, k, method="Gibbs", control=list(nstart=nstart, 
+                                                 seed = seed, best=best,
+                                                 burnin = burnin, iter = iter, 
+                                                 thin=thin))
+
+```
+
+
+##3.1 A D3 Visualization of Topics and Terms
+```{r,message=FALSE, warning=FALSE}
+#word-topic-probability
+words_topics <- tidy(ldaOut, matrix = "beta")
+top_terms <- terms(ldaOut, 20)
+
+#document-topic-probability
+thoughts_topics <- tidy(ldaOut, matrix = "gamma")
+
+
+## D=876, K=4 DXK matrix: document-topic distribution (theta)
+doc_topic_distribution <- as.data.frame(ldaOut@gamma)
+
+## K=4, W=1537 KXW matrix: topic-term distribution (phi)
+topic_term_distribution <- as.data.frame(exp(ldaOut@beta))
+
+#integer vector containing the number of tokens in each document of the corpus
+doc_length <- thoughts_word_document %>% 
+  group_by(UniqueID) %>%
+  summarize(sum=sum(n)) %>%
+  select(sum) %>%
+  unlist()
+
+#character vector of the terms in the vocabulary
+vocabulary <- ldaOut@terms
+
+#integer vector containing the frequency of each term in the vocabulary
+term_freq <- apply(dtm_thoughts,2,sum)
+
+# create the JSON object to feed the visualization:
+json <- createJSON(
+  phi = topic_term_distribution, 
+  theta = doc_topic_distribution, 
+  doc.length = doc_length, 
+  vocab = vocabulary, 
+  term.frequency = term_freq
+)
+
+#serVis(json, as.gist = T)
+
+```
+
+*Result Comparison*
+
+*Four Topics*: https://bl.ocks.org/YiniZhang/raw/96d03e82dafeb826b0bb16cf1268abbc/#topic=0&lambda=1&term=
+
+*Seven Topics*: https://bl.ocks.org/YiniZhang/raw/43da02abdbb1573e32b74de835ca893c/#topic=0&lambda=1&term=
+
+*Ten Topics*: https://bl.ocks.org/YiniZhang/raw/921a36d58c666e144715a70982ea0ee0/#topic=0&lambda=1&term=
+
+#3.2 Most Common Terms in Each Topic
+```{r}
+words_topics %>%
+  group_by(topic) %>%
+  top_n(10, beta) %>%
+  ungroup() %>%
+  arrange(topic, -beta) %>%
+  mutate(term = reorder(term, beta)) %>%
+  ggplot(aes(term, beta, fill=factor(topic))) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~ topic, scales = "free") +
+  xlab(NULL) +
+  coord_flip() +
+  ggtitle("Most Common 10 Terms in Each Topic")
+```
+
+#3.3 Per-document classification
+
+```{r, message=FALSE}
+ldaOut_topics <- as.data.frame(topics(ldaOut))
+colnames(ldaOut_topics) <- "topic"
+ldaOut_topics$UniqueID <- as.numeric(rownames(ldaOut_topics))
+
+# topic in different plan default
+topic_condition <- ldaOut_topics %>% 
+  left_join(condition) %>% 
+  group_by(Condition_Merged) %>% 
+  count(topic) %>%
+  as.data.frame() 
+
+ggplot(topic_condition, aes(x=topic, y=n, fill = Condition_Merged)) +
+  geom_bar(stat = "Identity", position = "dodge") +
+  ggtitle("Topic-Condition Comparison")
+
+
+# topic in different choice
+topic_choice <- ldaOut_topics %>% 
+  left_join(condition) %>% 
+  group_by(PreferFlex) %>% 
+  count(topic) %>%
+  as.data.frame()
+
+ggplot(topic_choice, aes(topic, n, fill = factor(PreferFlex))) +
+  geom_bar(stat = "Identity", position = "dodge") +
+  ggtitle("Topic-Choice Comparison")
+
+```
+
+
+
+
+
+
+
+
+
+
+
